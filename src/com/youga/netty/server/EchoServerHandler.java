@@ -12,6 +12,8 @@ import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.util.concurrent.GlobalEventExecutor;
 
+import java.io.File;
+import java.io.RandomAccessFile;
 import java.util.Arrays;
 
 
@@ -20,10 +22,14 @@ import java.util.Arrays;
  */
 public class EchoServerHandler extends SimpleChannelInboundHandler<Object> {
 
+    private static final String FILE_SAVE_PATH = "D:";
     private static ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
-    private static final byte PING_MSG = 1;
-    private static final byte PONG_MSG = 2;
-    private int heartbeatCount;
+    // 失败计数器：未收到client端发送的ping请求
+    private int mUnRecPingTimes = 0;
+    // 设置6秒检测chanel是否接受过心跳数据
+    static final int READ_WAIT_SECONDS = 6;
+    // 定义客户端没有收到服务端的pong消息的最大次数
+    private static final int MAX_UN_REC_PING_TIMES = 3;
 
     @Override
     public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -31,53 +37,29 @@ public class EchoServerHandler extends SimpleChannelInboundHandler<Object> {
         Channel incoming = ctx.channel();
 
         if (msg instanceof EchoFile) {
-//            EchoFile ef = (EchoFile) msg;
-//            int SumCountPackage = ef.getSumCountPackage();
-//            int countPackage = ef.getCountPackage();
-//            byte[] bytes = ef.getBytes();
-//            String file_name = ef.getFile_name();
-//
-//            String path = FILE_SAVE_PATH + File.separator + file_name;
-//            File file = new File(path);
-//            RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw");
+            EchoFile echo = (EchoFile) msg;
+            String path = FILE_SAVE_PATH + File.separator + echo.fileName;
+            File file = new File(path);
+            RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw");
 //            randomAccessFile.seek(countPackage * DATA_LENGTH - DATA_LENGTH);
-//            randomAccessFile.write(bytes);
-//
-//            System.out.println("SYSTEM TOTAL PACKAGE COUNT：" + ef.getSumCountPackage());
-//            System.out.println("SYSTEM NOT IS THE " + countPackage + "th PACKAGE");
-//            System.out.println("SYSTEM PACKAGE COUNT: " + bytes.length);
-//
-//            countPackage = countPackage + 1;
-//
-//            if (countPackage <= SumCountPackage) {
-//                ef.setCountPackage(countPackage);
-//                ctx.writeAndFlush(ef);
-//                randomAccessFile.close();
-//
-//                ctx.writeAndFlush("SYSTEM " + countPackage + " UPLOADED");
-//            } else {
-//                randomAccessFile.close();
-//                ctx.close();
-//                ctx.writeAndFlush("SYSTEM " + ef.getFile_name() + " UPLOAD FINISHED");
-//            }
+            randomAccessFile.write(echo.bytes);
+            randomAccessFile.close();
+
+            EchoMessage message = EchoMessage.buildMessage("SERVER - GOT YOUR File " + echo.fileName + " fileSize:" + echo.fileSize, Target.SERVER);
+            System.out.println("RECEIVED: " + ctx.channel().remoteAddress() + " " + echo.fileName + " " + echo.fileSize);
+            incoming.writeAndFlush(message);
         } else if (msg instanceof EchoMessage) {
             EchoMessage message = (EchoMessage) msg;
-
-            String str = message.getMessage();
-            System.out.println("RECEIVED: " + ctx.channel().remoteAddress() + " " + str);
-
-            message = EchoMessage.buildMessage("SYSTEM - GOT YOUR MESSAGE" + str, Target.SERVER);
-            incoming.writeAndFlush(message);
-        } else if (msg instanceof ByteBuf) {
-            ByteBuf byteBuf = (ByteBuf) msg;
-            System.err.println(Arrays.toString(byteBuf.array()));
-            if (byteBuf.getByte(4) == PING_MSG) {
-                sendPongMsg(ctx);
-            } else if (byteBuf.getByte(4) == PONG_MSG) {
-                System.out.println(" get pong msg from " + ctx.channel().remoteAddress());
+            if (message.target == Target.HEART_BEAT) {
+                // 计数器清零
+                mUnRecPingTimes = 0;
             } else {
-                handleData(ctx, byteBuf);
+                message = EchoMessage.buildMessage("SERVER - GOT YOUR MESSAGE " + message.getMessage(), Target.SERVER);
             }
+            System.out.println("RECEIVED: " + ctx.channel().remoteAddress() + " " + message.target.getDescribe() + " " + message.getMessage());
+            incoming.writeAndFlush(message);
+        } else {
+            System.out.println("RECEIVED: " + msg.toString());
         }
     }
 
@@ -111,47 +93,26 @@ public class EchoServerHandler extends SimpleChannelInboundHandler<Object> {
             IdleStateEvent e = (IdleStateEvent) evt;
             switch (e.state()) {
                 case READER_IDLE:
-                    System.err.println("---client " + ctx.channel().remoteAddress().toString() + " reader timeout, close it---");
-                    ctx.close();
+                    // 失败计数器次数大于等于3次的时候，关闭链接，等待client重连
+                    if (mUnRecPingTimes >= MAX_UN_REC_PING_TIMES) {
+                        // 连续超过N次未收到client的ping消息，那么关闭该通道，等待client重连
+                        ctx.channel().close();
+                    } else {
+                        // 失败计数器加1
+                        mUnRecPingTimes++;
+                    }
+                    System.err.println("---READER_IDLE---mUnRecPingTimes:" + mUnRecPingTimes);
                     break;
                 case WRITER_IDLE:
+                    System.err.println("---WRITER_IDLE---");
                     break;
                 case ALL_IDLE:
+                    System.err.println("---ALL_IDLE---");
                     break;
                 default:
                     break;
             }
         }
-    }
-
-    protected void handleData(ChannelHandlerContext ctx, ByteBuf byteBuf) {
-        Channel incoming = ctx.channel();
-        byte[] data = new byte[byteBuf.readableBytes() - 5];
-        byteBuf.skipBytes(5);
-        byteBuf.readBytes(data);
-
-        EchoMessage message = EchoMessage.buildMessage(data, Target.SERVER);
-        incoming.writeAndFlush(message);
-        System.out.println(message.getMessage());
-    }
-
-    protected void sendPingMsg(ChannelHandlerContext context) {
-        ByteBuf buf = context.alloc().buffer(5);
-        buf.writeInt(5);
-        buf.writeByte(PING_MSG);
-        buf.retain();
-        context.writeAndFlush(buf);
-        heartbeatCount++;
-        System.out.println(" sent ping msg to " + context.channel().remoteAddress() + ", count: " + heartbeatCount);
-    }
-
-    private void sendPongMsg(ChannelHandlerContext context) {
-        ByteBuf buf = context.alloc().buffer(5);
-        buf.writeInt(5);
-        buf.writeByte(PONG_MSG);
-        context.channel().writeAndFlush(buf);
-        heartbeatCount++;
-        System.out.println(" sent pong msg to " + context.channel().remoteAddress() + ", count: " + heartbeatCount);
     }
 
     @Override

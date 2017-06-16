@@ -20,7 +20,7 @@ public class InitializerPipeline extends ChannelInitializer<SocketChannel> {
     @Override
     protected void initChannel(SocketChannel ch) throws Exception {
         ChannelPipeline p = ch.pipeline();
-        p.addLast(new IdleStateHandler(10, 0, 0));
+        p.addLast(new IdleStateHandler(EchoServerHandler.READ_WAIT_SECONDS, 0, 0));
         p.addLast(new ObjectDecoder(Integer.MAX_VALUE, ClassResolvers.weakCachingConcurrentResolver(null)));
         p.addLast(new ObjectEncoder());
         p.addLast("handler", new EchoServerHandler());
