@@ -53,11 +53,21 @@ public class EchoServerHandler extends SimpleChannelInboundHandler<Object> {
             if (message.target == Target.HEART_BEAT) {
                 // 计数器清零
                 mUnRecPingTimes = 0;
+                incoming.writeAndFlush(message);
             } else {
-                message = EchoMessage.buildMessage("SERVER - GOT YOUR MESSAGE " + message.getMessage(), Target.SERVER);
+                if (channels.size() == 1) {
+                    message = EchoMessage.buildMessage("SERVER - GOT YOUR MESSAGE " + message.getMessage(), Target.SERVER);
+                    incoming.writeAndFlush(message);
+                } else {
+                    for (Channel channel : channels) {
+                        if (incoming != channel) {
+                            message.target = Target.SERVER;
+                            channel.writeAndFlush(message);
+                        }
+                    }
+                }
             }
             System.out.println("RECEIVED: " + ctx.channel().remoteAddress() + " " + message.target.getDescribe() + " " + message.getMessage());
-            incoming.writeAndFlush(message);
         } else {
             System.out.println("RECEIVED: " + msg.toString());
         }
